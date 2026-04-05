@@ -1,0 +1,16 @@
+{
+  "name": "hls-proxy",
+  "version": "1.0.0",
+  "description": "Simple HLS Proxy for streaming .m3u8 and .ts files",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "author": "Senior Backend Developer",
+  "license": "ISC"
+}

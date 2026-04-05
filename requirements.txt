@@ -1,0 +1,4 @@
+httpx
+telethon
+tqdm
+python-dotenv
