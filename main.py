@@ -47,7 +47,7 @@ class BotState:
     is_processing = False
 
 # Initialize client
-client = TelegramClient('dramabox_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+client = TelegramClient('fundrama_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
@@ -88,7 +88,7 @@ async def update_bot(event):
 async def panel(event):
     if event.chat_id != ADMIN_ID:
         return
-    await event.reply("🎛 **Dramabox Control Panel**", buttons=get_panel_buttons())
+    await event.reply("🎛 **FunDrama Control Panel**", buttons=get_panel_buttons())
 
 @client.on(events.CallbackQuery())
 async def panel_callback(event):
@@ -171,7 +171,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
     poster = detail.get("cover") or detail.get("coverWap") or detail.get("poster") or ""
     
     # 2. Setup temp directory
-    temp_dir = tempfile.mkdtemp(prefix=f"dramabox_{book_id}_")
+    temp_dir = tempfile.mkdtemp(prefix=f"fundrama_{book_id}_")
     video_dir = os.path.join(temp_dir, "episodes")
     os.makedirs(video_dir, exist_ok=True)
     
@@ -301,7 +301,7 @@ async def auto_mode_loop():
             await asyncio.sleep(60) # retry after 1 min
 
 if __name__ == '__main__':
-    logger.info("Initializing Dramabox Auto-Bot...")
+    logger.info("Initializing FunDrama Auto-Bot...")
     
     # Start auto loop and keep the client running
     client.loop.create_task(auto_mode_loop())

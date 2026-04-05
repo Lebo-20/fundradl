@@ -13,7 +13,7 @@ HEADERS = {
 
 async def download_all_episodes(episodes, download_dir: str, semaphore_count: int = 5):
     """
-    Download semua episode dari iDrama API secara paralel dengan retry.
+    Download semua episode dari FunDrama API secara paralel dengan retry.
     """
     os.makedirs(download_dir, exist_ok=True)
     semaphore = asyncio.Semaphore(semaphore_count)
