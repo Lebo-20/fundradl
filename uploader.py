@@ -75,12 +75,19 @@ async def upload_drama(client: TelegramClient, chat_id: int,
         logger.info(f"Uploading final video for {title}")
         
         # Send Poster + Details first (Permanent)
-        await client.send_file(
-            chat_id,
-            poster_url,
-            caption=caption,
-            force_document=False
-        )
+        if poster_url and str(poster_url).strip():
+            await client.send_file(
+                chat_id,
+                poster_url,
+                caption=caption,
+                force_document=False
+            )
+        else:
+            # Fallback if poster is empty
+            await client.send_message(
+                chat_id,
+                caption
+            )
         
         # Send Video (Permanent)
         await client.send_file(
