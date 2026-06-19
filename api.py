@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 # ============================================
 # FunDrama API
 # ============================================
-BASE_FUNDRAMA = "https://drakula.dramabos.my.id/api/fundrama"
+BASE_FUNDRAMA = "https://drakula.dramabos.online/api/fundrama"
 AUTH_CODE = "A8D6AB170F7B89F2182561D3B32F390D"
 
 HEADERS = {
@@ -30,13 +30,21 @@ async def get_drama_detail(drama_id: str):
                 logger.error(f"[FunDrama] API failed: {data.get('mchart')}")
                 return None
 
-            # Di FunDrama, ddriv.btra berisi info drama
-            payload = data.get("data", {}).get("ddriv", {}).get("btra", {})
-            if not payload:
-                # Kadang ada di data langsung
-                payload = data.get("data") or {}
+            # Safely navigate the nested dict
+            data_dict = data.get("data") or {}
+            ddriv = data_dict.get("ddriv") or {}
+            payload = ddriv.get("btra") or data_dict or {}
 
-            title = payload.get("sstat") or payload.get("dshame") or payload.get("title") or ""
+            # Prioritize finding a real title
+            title = (
+                payload.get("title") or 
+                payload.get("sstat") or 
+                payload.get("dshame") or 
+                payload.get("short_play_name") or 
+                payload.get("bookName") or 
+                payload.get("name") or 
+                ""
+            )
             intro = payload.get("sdebt") or payload.get("intro") or ""
             poster = payload.get("fdar") or payload.get("poster") or ""
             
@@ -125,8 +133,8 @@ async def search_dramas(query: str, lang: str = "id"):
 
             dramas_raw = data.get("data", {}).get("ddriv", {}).get("lsumm", [])
             for item in dramas_raw:
-                drama_id = str(item.get("dshame") or item.get("id", ""))
-                title = item.get("sstat") or item.get("dshame") or "Unknown"
+                drama_id = str(item.get("id") or item.get("dshame") or "")
+                title = item.get("title") or item.get("sstat") or item.get("dshame") or "Unknown"
                 poster = item.get("fdar") or ""
 
                 all_dramas.append({
@@ -141,49 +149,70 @@ async def search_dramas(query: str, lang: str = "id"):
     return all_dramas
 
 
-async def get_latest_dramas(pages=1, limit=20, lang="id", **kwargs):
-    """Ambil daftar drama terbaru dari FunDrama API."""
+async def get_latest_dramas(pages=1, limit=20, lang="id", types=None, **kwargs):
+    """
+    Ambil daftar drama terbaru. 
+    'types' bisa berupa list: ['discovery', 'popular', 'search_hot']
+    """
     all_dramas = []
     seen_ids = set()
+    
+    # Defaults to just 'dramas' if no types specified
+    if not types:
+        search_types = ["dramas"]
+    else:
+        search_types = types if isinstance(types, list) else [types]
 
     async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
-        for page in range(1, pages + 1):
-            try:
-                url = f"{BASE_FUNDRAMA}/dramas"
-                params = {"lang": lang, "page": page, "limit": limit, "code": AUTH_CODE}
-                res = await client.get(url, params=params)
-                if res.status_code != 200:
-                    logger.warning(f"[FunDrama] /dramas p{page} HTTP {res.status_code}")
-                    continue
-
-                data = res.json()
-                if not data.get("success"):
-                    continue
-
-                dramas_raw = data.get("data", {}).get("ddriv", {}).get("lsumm", [])
-                
-                added = 0
-                for item in dramas_raw:
-                    drama_id = str(item.get("dshame") or item.get("id", ""))
-                    if not drama_id or drama_id in seen_ids:
+        for s_type in search_types:
+            for page in range(1, pages + 1):
+                try:
+                    # Map types to endpoints
+                    endpoint = s_type if s_type != "dramas" else "dramas"
+                    url = f"{BASE_FUNDRAMA}/{endpoint}"
+                    
+                    params = {"lang": lang, "page": page, "limit": limit, "code": AUTH_CODE}
+                    res = await client.get(url, params=params)
+                    if res.status_code != 200:
                         continue
-                    seen_ids.add(drama_id)
 
-                    title = item.get("sstat") or item.get("dshame") or "Unknown"
-                    poster = item.get("fdar") or ""
+                    data = res.json()
+                    if not data.get("success"):
+                        continue
 
-                    all_dramas.append({
-                        "_source": "fundrama",
-                        "id": drama_id,
-                        "title": title,
-                        "bookName": title,
-                        "poster": poster,
-                    })
-                    added += 1
+                    # Structure varies: sometimes in .data.ddriv.lsumm, sometimes .data.list
+                    data_payload = data.get("data", {})
+                    if isinstance(data_payload, dict):
+                        dramas_raw = data_payload.get("ddriv", {}).get("lsumm") or data_payload.get("list") or []
+                    else:
+                        dramas_raw = []
+                    
+                    if not dramas_raw and isinstance(data_payload, list):
+                        dramas_raw = data_payload
 
-                logger.info(f"[FunDrama] Page {page}: +{added} drama (total {len(all_dramas)})")
-            except Exception as e:
-                logger.error(f"[FunDrama] /dramas p{page} error: {e}")
+                    added = 0
+                    for item in dramas_raw:
+                        drama_id = str(item.get("id") or item.get("dshame") or "")
+                        if not drama_id or drama_id in seen_ids:
+                            continue
+                        seen_ids.add(drama_id)
+
+                        title = item.get("title") or item.get("sstat") or item.get("dshame") or "Unknown"
+                        poster = item.get("fdar") or ""
+
+                        all_dramas.append({
+                            "_source": f"fundrama_{s_type}",
+                            "id": drama_id,
+                            "title": title,
+                            "bookName": title,
+                            "poster": poster,
+                        })
+                        added += 1
+
+                    if added > 0:
+                        logger.info(f"[FunDrama] {s_type} p{page}: +{added} drama")
+                except Exception as e:
+                    logger.error(f"[FunDrama] {s_type} error: {e}")
 
     return all_dramas
 
