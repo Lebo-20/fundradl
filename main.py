@@ -46,8 +46,15 @@ class BotState:
     is_auto_running = True
     is_processing = False
 
-# Initialize client
-client = TelegramClient('fundrama_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# Initialize client placeholder
+client = None
+
+async def get_client():
+    global client
+    if client is None:
+        client = TelegramClient('fundrama_bot', API_ID, API_HASH)
+        await client.start(bot_token=BOT_TOKEN)
+    return client
 
 def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
@@ -56,7 +63,7 @@ def get_panel_buttons():
         [Button.inline(f"📊 Status: {status_text}", b"status")]
     ]
 
-@client.on(events.NewMessage(pattern='/update'))
+@events.register(events.NewMessage(pattern='/update'))
 async def update_bot(event):
     if event.sender_id != ADMIN_ID:
         return
@@ -84,13 +91,13 @@ async def update_bot(event):
     except Exception as e:
         await status_msg.edit(f"❌ **Gagal melakukan update**: {e}")
 
-@client.on(events.NewMessage(pattern='/panel'))
+@events.register(events.NewMessage(pattern='/panel'))
 async def panel(event):
     if event.chat_id != ADMIN_ID:
         return
     await event.reply("🎛 **FunDrama Control Panel**", buttons=get_panel_buttons())
 
-@client.on(events.CallbackQuery())
+@events.register(events.CallbackQuery())
 async def panel_callback(event):
     if event.sender_id != ADMIN_ID:
         return
@@ -115,11 +122,70 @@ async def panel_callback(event):
         else:
             logger.error(f"Callback error: {e}")
 
-@client.on(events.NewMessage(pattern='/start'))
+@events.register(events.NewMessage(pattern='/start'))
 async def start(event):
     await event.reply("Selamat datang di Bot Downloader Drama! 🎉\n\nGunakan perintah `/download {ID_DRAMA}` untuk mulai.")
 
-@client.on(events.NewMessage(pattern=r'/download (\d+)'))
+@events.register(events.NewMessage(pattern='/batch'))
+async def on_batch(event):
+    if event.chat_id != ADMIN_ID:
+        return
+        
+    if BotState.is_processing:
+        await event.reply("⚠️ Bot sedang sibuk memproses drama lain.")
+        return
+
+    if not os.path.exists("new_found.json"):
+        await event.reply("❌ File `new_found.json` tidak ditemukan. Jalankan ekstraksi ID dulu.")
+        return
+
+    with open("new_found.json", "r", encoding="utf-8") as f:
+        import json
+        dramas = json.load(f)
+
+    if not dramas:
+        await event.reply("✅ Tidak ada drama baru untuk diproses.")
+        return
+
+    # Filter out already processed
+    to_process = [d for d in dramas if d["id"] not in processed_ids]
+    if not to_process:
+        await event.reply("✅ Semua drama di list sudah pernah diproses.")
+        return
+
+    status_msg = await event.reply(f"🚀 **Memulai Batch Processing untuk {len(to_process)} drama...**")
+    BotState.is_processing = True
+    
+    success_count = 0
+    fail_count = 0
+    
+    for i, drama in enumerate(to_process):
+        drama_id = drama["id"]
+        title = drama["title"]
+        
+        # Double check title if it's just an ID
+        if title.isdigit():
+            det = await get_drama_detail(drama_id)
+            if det and det.get("title"):
+                title = det["title"]
+            
+        await status_msg.edit(f"🔄 **Batch ({i+1}/{len(dramas)})**\n🎬 Drama: `{title}`\n⏳ Sedang diproses...")
+        
+        success = await process_drama_full(drama_id, AUTO_CHANNEL)
+        if success:
+            processed_ids.add(drama_id)
+            save_processed(processed_ids)
+            success_count += 1
+        else:
+            fail_count += 1
+            
+        # Prevent rate limits
+        await asyncio.sleep(5)
+        
+    BotState.is_processing = False
+    await status_msg.edit(f"🏁 **Batch Processing Selesai!**\n✅ Berhasil: {success_count}\n❌ Gagal: {fail_count}")
+
+@events.register(events.NewMessage(pattern=r'/download (\d+)'))
 async def on_download(event):
     chat_id = event.chat_id
     
@@ -146,8 +212,12 @@ async def on_download(event):
         return
     title = detail.get("title") or detail.get("bookName") or detail.get("name") or f"Drama_{book_id}"
     description = detail.get("intro") or detail.get("introduction") or detail.get("description") or "No description available."
-    poster = detail.get("cover") or detail.get("coverWap") or detail.get("poster") or "" # URL for poster
+    poster = detail.get("cover") or detail.get("coverWap") or detail.get("poster") or "" 
     
+    # If title is still just the ID, it's not helpful
+    if title.isdigit() or title == f"Drama_{book_id}":
+        title = f"Drama {book_id}"
+
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episode: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses...")
     
     BotState.is_processing = True
@@ -181,10 +251,12 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         # 3. Download
         success = await download_all_episodes(episodes, video_dir)
         if not success:
-            if status_msg: await status_msg.edit("❌ Download Gagal.")
+            if status_msg: await status_msg.edit("❌ Download Gagal. Beberapa episode tidak bisa diambil.")
             return False
 
         # 4. Merge
+        if status_msg: await status_msg.edit(f"🎬 **{title}**\n📥 Download Selesai!\n🔄 Sedang menggabungkan (Merging) episode...")
+        
         output_video_path = os.path.join(temp_dir, f"{title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
         if not merge_success:
@@ -192,8 +264,9 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
             return False
 
         # 5. Upload
+        current_client = await get_client()
         upload_success = await upload_drama(
-            client, chat_id, 
+            current_client, chat_id, 
             title, description, 
             poster, output_video_path
         )
@@ -211,7 +284,16 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         return False
     finally:
         if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+            import time
+            # Give OS a moment to release file handles (especially on Windows)
+            await asyncio.sleep(2)
+            for _ in range(3):
+                try:
+                    shutil.rmtree(temp_dir)
+                    break
+                except Exception as e:
+                    logger.warning(f"Retrying cleanup for {temp_dir}: {e}")
+                    await asyncio.sleep(2)
 
 async def auto_mode_loop():
     """Loop to find and process new dramas automatically."""
@@ -229,16 +311,18 @@ async def auto_mode_loop():
             continue
             
         try:
-            interval = 5 if is_initial_run else 15 # Check every 15 mins after first run
+            interval = 5 if is_initial_run else 120 # Check every 15 mins after first run
             logger.info(f"🔍 Scanning for new dramas (Next scan in {interval}m)...")
             
-            # Step 1: Check Latest Discovery Endpoints (latest, foryou, homepage)
-            dramas = await get_latest_dramas(pages=3 if is_initial_run else 1) or []
+            # Step 1: Check multiple segments for discovery
+            # We scan 'dramas' (latest), 'discovery' (homepage), and 'popular'
+            search_types = ["dramas", "discovery", "popular"]
+            dramas = await get_latest_dramas(pages=2 if is_initial_run else 1, types=search_types) or []
             
-            # Step 2: If nothing new found, try POPULAR as fallback
+            # Step 2: Fallback if still nothing found
             if not dramas:
-                logger.info("🔎 No news found. Trying Popular Search fallback...")
-                dramas = await get_latest_dramas(pages=1, types=["populersearch"]) or []
+                logger.info("🔎 No news found. Trying Search Hot fallback...")
+                dramas = await get_latest_dramas(pages=1, types=["search_hot"]) or []
                 
             new_found = 0
             
@@ -252,18 +336,35 @@ async def auto_mode_loop():
                     continue
                     
                 if book_id not in processed_ids:
+                    # Check if bot is busy before starting auto-process
+                    while BotState.is_processing:
+                        await asyncio.sleep(10)
+                        if not BotState.is_auto_running: break
+                    
+                    if not BotState.is_auto_running: break
+
                     # Segera tandai database sebagai diproses (Anti Duplicate)
                     processed_ids.add(book_id)
                     save_processed(processed_ids)
                     
                     new_found += 1
-                    title = drama.get("title") or drama.get("bookName") or drama.get("name") or "Unknown"
+                    title = drama.get("title") or drama.get("bookName") or drama.get("name") or str(book_id)
+                    
+                    # Force fetch detail to get real title if current is just digits
+                    # This title will be LOCKED for the entire process duration
+                    if title.isdigit() or title == str(book_id):
+                        logger.info(f"🔍 Fetching real title for ID: {book_id}...")
+                        detail = await get_drama_detail(book_id)
+                        if detail and detail.get("title") and not detail.get("title").isdigit():
+                            title = detail["title"]
+                    
                     logger.info(f"✨ Found new drama: {title} ({book_id}). Starting process...")
                     
                     # Process to target channel
                     final_msg = await client.send_message(ADMIN_ID, f"🆕 **Auto-System Mendeteksi Drama Baru!**\n🎬 `{title}`\n🆔 `{book_id}`\n⏳ Sedang diproses...")
                     
                     BotState.is_processing = True
+                    # The process_drama_full must NOT change the title
                     success = await process_drama_full(book_id, AUTO_CHANNEL)
                     BotState.is_processing = False
                     
@@ -300,11 +401,24 @@ async def auto_mode_loop():
             logger.error(f"⚠️ Error in auto_mode_loop: {e}")
             await asyncio.sleep(60) # retry after 1 min
 
-if __name__ == '__main__':
+async def main():
     logger.info("Initializing FunDrama Auto-Bot...")
     
+    current_client = await get_client()
+    
+    # Add handlers
+    current_client.add_event_handler(update_bot)
+    current_client.add_event_handler(panel)
+    current_client.add_event_handler(panel_callback)
+    current_client.add_event_handler(start)
+    current_client.add_event_handler(on_batch)
+    current_client.add_event_handler(on_download)
+    
     # Start auto loop and keep the client running
-    client.loop.create_task(auto_mode_loop())
+    asyncio.create_task(auto_mode_loop())
     
     logger.info("Bot is active and monitoring.")
-    client.run_until_disconnected()
+    await current_client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
